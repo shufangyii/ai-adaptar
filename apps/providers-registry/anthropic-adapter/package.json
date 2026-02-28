@@ -1,0 +1,21 @@
+{
+  "name": "@ai-adaptar/anthropic-adapter",
+  "version": "1.0.0",
+  "description": "Anthropic Provider Adapter for AI Adaptar",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "@ai-adaptar/interfaces": "workspace:*",
+    "@ai-adaptar/common": "workspace:*",
+    "@anthropic-ai/sdk": "^0.24.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.20",
+    "typescript": "^5.3.3"
+  }
+}

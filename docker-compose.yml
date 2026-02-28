@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # NATS 消息队列
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"  # 客户端连接
+      - "8222:8222"  # 监控端口
+      - "6222:6222"  # 路由端口
+    command: "-js"    # 启用 JetStream
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: aiadaptar
+      POSTGRES_PASSWORD: aiadaptar123
+      POSTGRES_DB: aiadaptar
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiadaptar"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # NATS 监控面板 (可选)
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:latest
+    ports:
+      - "7777:7777"
+    environment:
+      NATS_URL: nats://nats:4222
+    depends_on:
+      - nats
+
+  # TODO: 添加 Grafana 监控
+  # TODO: 添加 Prometheus 监控
+  # TODO: 添加 Jaeger 链路追踪
+
+volumes:
+  redis_data:
+  postgres_data:

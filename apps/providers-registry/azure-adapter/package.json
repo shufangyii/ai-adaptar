@@ -1,0 +1,21 @@
+{
+  "name": "@ai-adaptar/azure-adapter",
+  "version": "1.0.0",
+  "description": "Azure OpenAI Provider Adapter for AI Adaptar",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "@ai-adaptar/interfaces": "workspace:*",
+    "@ai-adaptar/common": "workspace:*",
+    "openai": "^4.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.20",
+    "typescript": "^5.3.3"
+  }
+}

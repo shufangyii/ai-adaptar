@@ -1,0 +1,21 @@
+{
+  "name": "@ai-adaptar/gemini-adapter",
+  "version": "1.0.0",
+  "description": "Google Gemini Provider Adapter for AI Adaptar",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "@ai-adaptar/interfaces": "workspace:*",
+    "@ai-adaptar/common": "workspace:*",
+    "@google/generative-ai": "^0.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.20",
+    "typescript": "^5.3.3"
+  }
+}
