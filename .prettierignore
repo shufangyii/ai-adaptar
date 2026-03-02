@@ -1,0 +1,17 @@
+# dependencies
+node_modules
+
+# production
+dist
+build
+
+# misc
+.DS_Store
+*.log
+*.lock
+pnpm-lock.yaml
+
+# env files
+.env
+.env.*
+!.env.example
