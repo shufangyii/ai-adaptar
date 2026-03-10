@@ -146,7 +146,7 @@ llm-gateway-platform/
 1. 业务应用 → 网关 (sk-gateway-xxx)
 2. AuthGuard 验证 Key (Redis 缓存)
 3. RateLimitGuard 五维限流 (Lua 原子操作)
-4. CostEstimator 预估成本并预扣 (PG 冻结)
+4. WatermarkCheck 检查余额水位（放弃强一致性预扣，实施安全水位放行）
 5. DLP 轻量安全扫描 (无二次请求)
 6. 转发到 LiteLLM (带 Trace-Id)
 7. LiteLLM 转发到实际 Provider (如 OpenAI)
@@ -217,7 +217,7 @@ Provider → LiteLLM → api-gateway → 业务应用
 
 3. **消费幂等性必须保证**
    - 基于 `requestId` 的唯一约束防重入
-   - 事务 + 行级锁 (`SELECT ... FOR UPDATE`) 保证原子性
+   - 基于 Redis Lua 保证扣费原子性，并异步批量落库
    - Mock 测试重复消费同一消息
 
 4. **不能阻塞主链路**
@@ -282,8 +282,8 @@ A: 在高吞吐限流场景下，Cluster 的分布式写入性能更强，避免
 **Q: DLP 为什么不用大模型二次判断？**  
 A: 成本与延迟太高。轻量正则/规则足以拦截 90% 的 PII 泄露与 Prompt Injection。
 
-**Q: 如何处理流式意外断流的计费？**  
-A: 预扣机制 + Fallback 估算。执行前预扣上限，异常中断时按接收长度估算，多退少补。
+**Q: 如何处理流式意外断流的计费？**
+A: 水位校验 + Fallback 估算。根据安全水位放行，异常中断时按接收长度估算最终补差扣除。
 
 ---
 

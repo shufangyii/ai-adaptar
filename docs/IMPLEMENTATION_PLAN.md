@@ -27,7 +27,7 @@
 - [ ] 设计通用的 OpenAI 兼容路由控制器 (`ChatController`, `ModelsController`)。
 - [ ] 使用 `HttpModule` 或原生 Node 请求库透传给内网 LiteLLM Proxy。**所有请求必须带上唯一的 `request-id`。网关层必须强制统一设置下游超时 (如 30s 硬切断)**。
 - [ ] **全局熔断**：在网关层引入 Circuit Breaker (**禁止自写，建议使用成熟库如 `opossum`**)，防止悬挂连接。且单节点**必须配置最大并发阈值**，防 Node 事件循环阻塞。
-- [ ] **流式纯净透传**：实现 Server-Sent Events (SSE) 管道透传，**严禁在主链路做 JSON 拆解或组装重组**。
+- [ ] **流式纯净透传**：实现 Server-Sent Events (SSE) 管道透传，**严禁在主链路做 JSON 拆解或组装重组，必须直接使用原生 Node.js 流 (`req.pipe(res)`) 跳过 NestJS 拦截器的多余对象封装开销，防高并发 OOM**。
 
 ### 4. 鉴权与中间件 (Authentication & Middleware)
 
@@ -69,9 +69,9 @@
 - [ ] 设计五层拦截维度：(1)API Key QPS, (2)Project TPM, (3)并发连接, (4)特定模型 QPS, (5)IP黑名单。
 - [ ] **防突刺与内存释控**：TPM 的桶设计强制采用滑动窗口结合分段桶。**所有基于并发数的限流，必须绑定 Streaming 的结束事件 (`end` / `close` / `error`) 来精确释放**。
 
-### 4. 前置成本预估与安全审查 (Cost Estimator & DLP)
+### 4. 基于安全阈值的余额检查与 DLP (Balance Check & DLP)
 
-- [ ] **执行前成本判断**：新增 Cost Estimator，为防 Prompt 爆炸，**必须设置单次预估的最大成本上限 Cap**。通过后在 DB 中更新“冻结金额字段”做预扣定金。
+- [ ] **水位阈值检查**：放弃精准预扣机制，仅在网关层做极轻量的并发数限制与 Token 余额水位校验。只要租户可用余额大于安全阈值直接放行。
 - [ ] **安全防线 (DLP)**：开发脱离大模型二次耗时依赖的极轻量正则/规则扫描引擎。如果扫描挂了进行优雅降级（不阻断正常业务）。**严禁其在网关主链路上出现二次网络请求嵌套**。
 
 **验证计划 (Phase 2 Verification)**:
@@ -95,14 +95,14 @@
 ### 2. Kafka 高级集成 (Enterprise Message Broker)
 
 - [ ] 配置 NestJS 连接 Kafka。**Producer 必须开启幂等写入 (`enable.idempotence=true`)**。
-- [ ] 组装纯结构化的 JSON Payload，以 `ProjectId` 作 Partition Key 异步落盘，设计健壮的 Dead Letter Queue 预防毒消息锁区。
+- [ ] 组装纯结构化的 JSON Payload，**严禁单纯使用 `ProjectId` 导致热点分布，必须以 `hash(projectId + traceId)` 作为 Partition Key 将请求打散到不同分区**，设计健壮的 Dead Letter Queue 预防毒消息锁区。
 
 ### 3. 后台消费者微服务 (Log Consumer Worker)
 
 - [ ] 创建新的 NestJS App（如 `background-worker`）。
 - [ ] 监听上述 MQ 的队列。接收消息后执行以下操作：
   - 计算本次调用的消费金额 (依据使用的模型和 Token 量)。
-  - **消费库与幂等核对**：使用**事务结合行级锁 (`SELECT ... FOR UPDATE`)** 更新余额完成冲销。**基于 `requestId` 的唯一性约束做防重入幂等校验**。不要轻易相信单边用量，**后台设立 Cron Job 每日跑一次对账单 Reconciliation**。
+  - **基于 Redis 的准实时落账与 PG 异步批量刷盘**：放弃在高并发消费链路使用 PostgreSQL 的行级锁 (`SELECT ... FOR UPDATE`)。改用 **Redis Lua 脚本**做高性能原子额度扣减。定期（如 1 分钟/批量 1000 条）执行 Batch Update 归档至 PostgreSQL 账单数据库中。**基于 `requestId` 的唯一性约束做防重入幂等校验**。后台设立 Cron Job 每日跑一次对账单 Reconciliation。
   - **Elasticsearch 集成**：剔除消耗容量的完整 Prompt 原文，仅将部分哈希结果、打标及元数据以结构化 JSON 写入 ES。**运维测必须立刻为索引配置：ILM 生命周期、时序冷热节点分层以及按日期的 Index Rollover 防硬盘崩溃**。
 
 **验证计划 (Phase 3 Verification)**:
@@ -133,7 +133,7 @@
 ### 2. 容器化构建与终态演习 (DevOps & Stress Testing)
 
 - [ ] 完善多阶段 Dockerfile，**保证 Runtime 镜像彻底剔除 Dev 依赖**，并在 Docker 侧制定 CPU Limit / Memory Limit。
-- [ ] 在 K8s Yaml 或 Helm Chart 中，对网关与后台服务**配置 HPA (CPU+RPS) 及 PodDisruptionBudget**。对 LiteLLM Proxy 配置必须通过且苛刻的 `readinessProbe` 防盲目吸入流量。
+- [ ] 在 K8s Yaml 或 Helm Chart 中，对网关与后台服务**配置 HPA (CPU+RPS) 及 PodDisruptionBudget**。对 LiteLLM Proxy，由于其 Python 单进程 GIL 限制，**强烈要求使用高 `replicas` 进行横向扩容**，而非单机大 CPU 垂直扩容。配置必须通过且苛刻的 `readinessProbe` 防盲目吸入流量。
 - [ ] **上线前三类致命破坏验收压测**：
   1. 模拟全 Provider 全部报 `5xx` 错误下的可用性及退款链路状态分析。
   2. 构造压溃 ES/Log Consumer 导致 Kafka 破亿级堆积下的内存/积压场景反应。

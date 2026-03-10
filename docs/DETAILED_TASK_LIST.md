@@ -65,7 +65,7 @@
 - [ ] **实现请求转发逻辑**
   - [ ] 使用 NestJS `HttpModule` 或 `axios` 透传到 LiteLLM
   - [ ] **强制设置下游超时 (30s 硬切断)**
-  - [ ] 实现 Server-Sent Events (SSE) 管道，严禁主链路 JSON 拆解重组
+  - [ ] **必须直接使用原生 Node.js 流 (`req.pipe(res)`) 传递 SSE 数据**，严禁使用重负载的框架级序列化拦截器，以防高并发 OOM
   - [ ] 完整复制上游响应头与状态码
 
 - [ ] **全局熔断与并发控制**
@@ -175,13 +175,12 @@
   - [ ] 集成到 `api-gateway` 的 HTTP 处理流程
   - [ ] 拦截超限请求返回 429 Too Many Requests
 
-### 2.4 前置成本预估与 DLP
+### 2.4 基于安全阈值的余额检查与 DLP
 
-- [ ] **成本预估器 (Cost Estimator)**
-  - [ ] 根据 Prompt 长度估算成本
-  - [ ] **设置单次预估最大成本上限 Cap**
-  - [ ] 在数据库中更新"冻结金额"做预扣定金
-  - [ ] 预估失败返回 402 Payment Required
+- [ ] **水位阈值检查**
+  - [ ] 查询 Redis 中租户当前余额
+  - [ ] 根据安全水位线（非绝对最大 Tokens）进行轻量校验放行
+  - [ ] 若余额低于阈值返回 402 Payment Required
   - [ ] 编写单测覆盖边界场景
 
 - [ ] **轻量级 DLP 引擎**
@@ -233,7 +232,7 @@
 
 - [ ] **消息结构化设计**
   - [ ] 定义 CallLog DTO (纯 JSON 结构化)
-  - [ ] `ProjectId` 作为 Partition Key 保障顺序消费
+  - [ ] `hash(projectId + traceId)` 作为 Partition Key 解决热点避免消费者阻塞
   - [ ] 包含 request_id、token_count、cost_estimat、timestamp 等
 
 - [ ] **Dead Letter Queue 机制**
@@ -255,9 +254,9 @@
 
 - [ ] **计费逻辑**
   - [ ] 接收消息，计算消费金额 (模型 + Token 数)
-  - [ ] 使用**事务 + 行级锁 (`SELECT ... FOR UPDATE`)** 更新余额
-  - [ ] **基于 `requestId` 的唯一性约束做幂等防重入**
-  - [ ] 成功后记录 BillingRecord
+  - [ ] **放弃使用 PG 事务锁 (`SELECT ... FOR UPDATE`)**
+  - [ ] 依靠 Redis Lua 脚本进行高性能准实时余额扣减
+  - [ ] 后台定时合并增量 (Batch Update) 到 PostgreSQL
 
 - [ ] **Elasticsearch 集成**
   - [ ] 连接 ES 集群
@@ -345,6 +344,7 @@
     - [ ] 配置资源限制
 
   - [ ] **LiteLLM Proxy** Deployment:
+    - [ ] **配置高 replicas 横向扩容**突破 Python 单进程 GIL 瓶颈
     - [ ] **配置严格的 readinessProbe** (防盲目吸入流量)
     - [ ] 强制规定路由策略加载完成才就绪
     - [ ] 配置 OOM Kill 防护
@@ -475,7 +475,7 @@
 | 风险 | 影响 | 缓解方案 |
 |------|------|---------|
 | Token 计费不准 | 收入遗漏 | 信任 Provider usage，幂等消费，每日对账 |
-| 流式断流未结算 | 负产值 | Pre-cost 预扣 + Fallback 补差 |
+| 流式断流未结算 | 负产值 | Watermark 水位阈值拦截 + Fallback 补差 |
 | Redis 宕机 | 鉴权中断 | 本地缓存降级 + 快速恢复 |
 | Kafka 堆积 | 延迟上升 | 异步非阻塞 + 消费者扩容 |
 | Provider 不可用 | 服务中断 | 多 Provider 权重池 + 熔断 + 降级 |

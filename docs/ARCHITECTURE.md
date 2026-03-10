@@ -22,7 +22,7 @@
 | **LLM 适配层**        | **LiteLLM (Python proxy) 或直接基于 Node 端封装** | 用户指定了 LiteLLM。LiteLLM 是目前最佳的开源 LLM 代理，内置了一百多个模型的标准化适配（OpenAI 格式）、重试、负载均衡和 Fallback 能力。**架构建议：NestJS 作为前置的业务网关处理鉴权/计费/审计，后端挂载 LiteLLM Proxy 容器集群处理模型转换和请求。** |
 | **关系型数据库**      | **PostgreSQL (配合 Prisma ORM)**                  | 存储租户信息、应用管理、API Key 和配额流水。PostgreSQL 在处理高并发、复杂查询及 JSONB 扩展上表现极佳，Prisma 提供了极佳的 TypeScript 类型安全。                                                                                                      |
 | **缓存与实时计数**    | **Redis (Cluster)**                               | 用于实现高速的多维速率限制 (Rate Limiting 2.0)、分布式锁以及频繁读取的缓存（实时余额校验、Key 的校验、路由规则等），极大地降低对数据库的压力。                                                                                                       |
-| **消息队列 (必选)**   | **Kafka / RabbitMQ**                              | 必须引入消息队列处理异步日志落盘。考虑到 LLM 吞吐量大，首选 Kafka，以 `projectId` 作为 partition key 保证顺序消费不死锁。通过 MQ 将日志和账单异步写入存储系统，并增加 Dead Letter Queue 异常处理机制。                                               |
+| **消息队列 (必选)**   | **Kafka / RabbitMQ**                              | 必须引入消息队列处理异步日志落盘。考虑到 LLM 吞吐量大，首选 Kafka。**避免使用单一 `projectId` 导致热点分区**，应使用 `hash(projectId + traceId)` 作为 Partition Key 打散流量。通过 MQ 将日志和账单异步写入存储系统，并增加 Dead Letter Queue 异常处理机制。                                               |
 | **历史/审计日志存储** | **Elasticsearch**                                 | 专门用于存储海量的调用日志 (请求体、响应体、耗时、Token 消耗等)，利用 ES 强大的全文检索与聚合分析能力，以便给各业务线生成对账单及监控仪表盘。                                                                                                        |
 | **网关/反向代理**     | **Nginx 或 Envoy**                                | 作为整个集群的统一入口点，处理 SSL 证书卸载、基础的连接数限制和向 NestJS 微服务集群的负载均衡。                                                                                                                                                      |
 
@@ -41,8 +41,8 @@ graph TD
     subgraph "NestJS 业务网关集群 (Core API Gateway)"
         Nginx --> AuthMiddleware(鉴权/Token校验)
         AuthMiddleware --> RateLimiter(五维频率限制 Guard)
-        RateLimiter --> CostEstimator(执行前预估及余额校验)
-        CostEstimator --> QuotaCheck(配额检查 Guard)
+        RateLimiter --> WatermarkCheck(基于安全水位的余额检查)
+        WatermarkCheck --> QuotaCheck(配额检查 Guard)
         QuotaCheck --> DLP(数据合规及审查 Interceptor)
         DLP --> RouterLogic(服务路由)
         RouterLogic -.-> AsyncLogger(异步日志及统一追踪体系)
@@ -95,7 +95,7 @@ graph TD
    - **(并发与熔断)** 限制单节点最大并发数，并在网关层引入**独立 Circuit Breaker (熔断器)**。如果发现 LiteLLM Proxy 严重阻塞延迟，立刻掐断，保护 Node.js 事件循环不被拖死。
    - **(Cache Hit)** 查 Redis 校验 Key 是否合法（同时验证 Key 的版本号以支持强制失效）。
    - **(Rate Limit 2.0)** Redis 配合 Lua 脚本执行防并发防刷限流（五维保护）。其中并发限制必须精细绑定到 Streaming 生命周期中释放。
-   - **(Cost Estimator & Pre-deduct)** 执行前依据预估模型费率**进行余额“预扣冻结”**，防止流式打满后欠费。
+   - **(Balance Watermark Check)** 放弃精准“预扣冻结”。网关层仅做轻量的**并发数限制**和**Token余额水位检查**，只要余额大于安全阈值即可放行，避免大模型 `max_tokens` 引发无辜额度被大面积冻结。
    - **(安全与合规 DLP)** 执行异步可降级 (Degradable) 的轻量规则引擎 DLP 扫描（绝不在主链路二次调用大模型做 DLP），挂掉时不能阻拦正常业务。
 3. **路由代理层**：
    - 生成追踪 ID (`Trace-Id`)注入 Header 集群追踪。
@@ -104,11 +104,11 @@ graph TD
    - LiteLLM 开启配置 `stream_options: { include_usage: true }`，强制底座大模型（即使在流式情境下）一并返回 Token Usage。
    - 利用内置权重配置（例如 `azure_openai weight 60` / `openai weight 40`）做负载均衡。
 5. **流式响应处理 (Stream Pass-through & Response Scan)**：
-   - NestJS 采用流式数据透传给业务方，边收边发，确保业务方能获得打字机效果，并实施后置敏感审计（Response Scan）。
+   - NestJS **绕过沉重的拦截器/序列化机制**，直接获取原生的 Node `req` 和 `res` 对象，使用 `stream.pipe()` 等轻量化方式进行字节流透传，边收边发，确保打字机效果的同时避免大规模并发下的内存溢出(OOM)。实施异步且不阻塞的后置敏感审计（Response Scan）。
    - **(拦截与统计)** 废弃对 CPU 消耗大的 Node.js 级 token 计算，全盘信任并直接提取上游 Provider 的 `usage` 做最终计费标尺（包含异常断流补全逻辑或 fallback 估算）。
-6. **异步结算与一致性保障**：网关向 Kafka 投递带有准确 usage 的日志消息。
-   - **消费者顺序消费**：利用 `projectId` 的 Partition Key 控制有序消费且防阻塞（伴随 Dead Letter Queue）。
-   - **数据库余额一致性**：账单更新逻辑强制实现幂等。在 PostgreSQL 端必须采用**事务 + 行级锁 (`SELECT ... FOR UPDATE`)** 执行“最终扣准与补差释放”，彻底杜绝并发超卖的坑。每天定时执行 Reconciliation（对账）对齐 Provider 偏差。
+6. **异步结算与最终一致性保障**：网关向 Kafka 投递带有准确 usage 的日志消息。
+   - **防热点打散消费**：利用 `hash(projectId + traceId)` 的 Partition Key 将请求均匀打散，解决单一项目组流量过大导致的 Kafka 消费者过载。
+   - **基于 Redis 的准实时扣费与 PG 批量刷盘**：放弃在 PostgreSQL 核心链路使用 `SELECT ... FOR UPDATE` 悲观锁。Kafka 消费者收到 `usage` 后，先利用 **Redis Lua 脚本** 进行高性能的余额原子扣减。消费者或后台定时任务再异步将增量 **Batch Update** 持久化到 PostgreSQL 中。彻底杜绝数据库连接池耗尽。
 
 ---
 
@@ -122,7 +122,7 @@ graph TD
 
 ### 5.2 流量管控机制
 
-- **预扣与最终结算补差机制**：执行层结合 `Pre-Execution Cost Estimator`。执行前查表粗估并预扣（冻结）Token 费，流式彻底结束后根据实际用量“多退少补”。从根本上完美防止流式大请求突破余额上限导致的负产值。
+- **基于安全阈值的检查与 Redis 准实时扣减**：放弃精准“预扣冻结”，只在网关做轻量化的 Token 水位阈值检查放行。Kafka 收到日志后，基于 Redis In-Memory 原子计算迅速完成准实时扣除，并批量合并落库，以最终一致性的形态实现高并发不锁表的低延迟计费。
 - **五维限流 (Rate Limiting 2.0)**：废除单纯递增拦截，拥抱 Redis & Lua 原子 Token Bucket 控制。特别注意：**TPM 必须采用滑动窗口 + 分段桶算法避免边界突刺，所有缓存必须有 TTL 防脏数据长期存在。**
 
 ### 5.3 模型高可用 (LiteLLM特性加持)
@@ -137,7 +137,7 @@ graph TD
 采用 **Kubernetes (K8s) + Helm** 构建，因为微服务扩展性极强。强烈要求遵守以下底线要求：
 
 - **业务网关 Pods (NestJS)**：配置 HPA (基于 CPU + RPS 双指标扩缩容) 以及 PDB (PodDisruptionBudget)。
-- **模型代理 Pods (LiteLLM Proxy)**：**必须配置内部 `readinessProbe`**，防止自身未加载完路由策略即拉入流量池。强化硬 limit 以防 OOM 影响全节点。
+- **模型代理 Pods (LiteLLM Proxy)**：受限于 Python GIL 单进程并发上限瓶颈，必须采用**高 `replicas` 横向扩容**策略而非垂直增加单 Pod CPU。**必须配置内部 `readinessProbe`**，防止自身未加载完路由策略即拉入流量池。强化硬 limit 以防 OOM 影响全节点。
 - **审计日志存储策略 (Elasticsearch)**：**必须设置 ILM (Index Lifecycle Management) 并搭建冷热分层**。默认千万不要全量存原始 prompt 原文（脱敏处理后存入核心维度表，高频字段转日快照表），防止几个月内 ES 费用失控。
 - **数据库/缓存中间件**：
   - **PG** 运行一主一从 (Master/Slave)。
@@ -198,8 +198,8 @@ llm-gateway-platform/
 ### 阶段 2 (生产级增强)
 
 - **架构增强融合：**实现 Redis + Lua 五维 Rate Limiting 2.0。
-- **架构增强融合：**Kafka 以 `projectId` 设定分区键保障一致性，加入 Dead Letter Queue。
-- **架构增强融合：**加入预执行成本预测 (Pre-Execution Cost Estimator) 和实时余额日账单体系。
+- **架构增强融合：**Kafka 使用 `hash(projectId + traceId)` 设定分区键避免热点问题，加入 Dead Letter Queue。
+- **架构增强融合：**加入水位阈值检查，实施基于 Redis 的准实时落账与 PG 异步批量刷盘。
 - **架构增强融合：**接入 DLP 请求及返回的扫描体系 (PII/Prompt Injection)。
 - **架构增强融合：**配置 LiteLLM 上的 Provider 权重参数，做到负载池优化。
 

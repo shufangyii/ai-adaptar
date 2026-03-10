@@ -79,8 +79,8 @@
 | **P0** | 编写 Redis Lua 脚本 (Token Bucket) | 4h | Redis 连接 |
 | **P0** | 实现五维限流维度与拦截逻辑 | 4h | Lua 脚本 |
 | **P1** | 实现 Streaming 生命周期的并发释放 | 3h | 五维限流 |
-| **P1** | 编写成本预估器与余额校验 | 3h | Prisma + 模型费率表 |
-| **P1** | 实现预扣与冻结金额机制 | 2h | 成本预估 |
+| **P1** | 实现余额水位校验与安全放行 | 3h | Prisma + Redis 余额表 |
+| **P1** | 取消强制预扣，实现防超支兜底机制 | 2h | 水位校验 |
 | **P2** | 轻量 DLP 引擎 (正则扫描) | 3h | api-gateway |
 | **P2** | 编写限流与成本的集成测试 | 3h | 上述完成 |
 
@@ -88,8 +88,8 @@
 ```
 ✓ 五维限流完整可用，429 返回准确
 ✓ 并发限制精确释放，无泄漏
-✓ 超额请求被成本预估拦截，返回 402
-✓ 余额冻结成功，防止超支
+✓ 低余额请求被水位校验拦截，返回 402
+✓ 不再强制冻结，采用兜底机制防超支
 ✓ DLP 检测 PII/Injection 但不阻断主流
 ✓ 集成测试通过率 >= 85%
 ```
@@ -108,7 +108,7 @@
 | **P1** | 在 GatewayInterceptor 中投递日志 | 2h | Interceptor |
 | **P1** | 创建 background-worker 应用框架 | 2h | pnpm workspace |
 | **P1** | 实现 Kafka Consumer 与消息处理 | 3h | background-worker |
-| **P1** | 实现计费逻辑 (事务 + 行级锁) | 3h | Consumer |
+| **P1** | 实现计费逻辑 (Redis 准实时 + PG 异步批处理) | 3h | Consumer |
 | **P2** | 实现每日对账 Cron Job | 2h | 计费逻辑 |
 | **P2** | 编写消费与幂等性的单元测试 | 2h | 上述完成 |
 
@@ -215,7 +215,7 @@
 | **P1** | 编写 Helm Chart (api-gateway) | 3h | Dockerfile |
 | **P1** | 编写 Helm Chart (background-worker) | 2h | Dockerfile |
 | **P1** | 配置 HPA 与 PDB | 2h | Helm Chart |
-| **P2** | 配置 readinessProbe for LiteLLM | 1h | Helm Chart |
+| **P2** | 配置高 replicas 及 readinessProbe for LiteLLM | 1h | Helm Chart |
 | **P2** | 配置 ConfigMap & Secrets 管理 | 2h | Helm Chart |
 | **P3** | **致命破坏压测 1** (Provider 5xx) | 3h | Helm Chart |
 | **P3** | **致命破坏压测 2** (Kafka 堆积) | 3h | 同上 |
@@ -272,7 +272,7 @@
 | 时间超期 | 任何阶段超期超过 50% | 评估是否可延后 P2/P3 功能，优先交付 P0/P1 |
 | Token 计费错误 | Phase 3 测试失败 | 回到 Phase 3 逐步排查，必要时重设计计费逻辑 |
 | 数据丢失 | Phase 3 Kafka 丢消息 | 立即检查 Producer 幂等配置，必要时启用 Exactly Once |
-| 性能不达标 | Phase 4 压测 P95 > 600ms | 增加 api-gateway 副本数，优化 Redis 批量操作 |
+| 性能不达标 | Phase 4 压测 P95 > 600ms | 增加 LiteLLM 和 api-gateway 副本数，优化 Redis 批量操作 |
 | 部署失败 | Phase 4 Helm 部署异常 | 采用蓝绿部署，保留上一版本快速回滚 |
 
 ---
