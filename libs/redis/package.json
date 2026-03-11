@@ -11,7 +11,9 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.lib.json",
     "typecheck": "tsc --noEmit -p tsconfig.lib.json",
@@ -19,7 +21,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@nestjs/common": "^11.0.1"
+    "@nestjs/common": "^11.0.1",
+    "ioredis": "^5.10.0"
   },
   "devDependencies": {
     "@nestjs/testing": "^11.0.1",
