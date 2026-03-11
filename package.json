@@ -27,21 +27,25 @@
   "devDependencies": {
     "@nestjs/cli": "^11.0.16",
     "@types/jest": "^30.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.24.1",
-    "@typescript-eslint/parser": "^8.24.1",
-    "eslint": "^9.22.0",
-    "eslint-config-prettier": "^10.1.1",
-    "eslint-plugin-prettier": "^5.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "eslint": "^10.0.3",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
     "husky": "^9.1.7",
-    "jest": "^30.0.0",
-    "prettier": "^3.5.3",
-    "ts-jest": "^29.2.5",
-    "turbo": "^2.4.4",
-    "typescript": "^5.8.3"
+    "jest": "^30.3.0",
+    "prettier": "^3.8.1",
+    "ts-jest": "^29.4.6",
+    "turbo": "^2.8.15",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@10.32.1",
+  "dependencies": {
+    "@prisma/client": "7.4.2",
+    "prisma": "7.4.2"
+  }
 }

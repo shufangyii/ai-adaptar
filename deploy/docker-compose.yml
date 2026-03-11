@@ -1,0 +1,131 @@
+version: '3.8'
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ==========================================
+  # DEV Profile: Core Dependencies Only
+  # ==========================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: llm_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: llm_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    profiles: ["dev", "full"]
+
+  redis:
+    image: redis:7-alpine
+    container_name: llm_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+    profiles: ["dev", "full"]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.34.11 # Use a stable tag instead of latest if possible, adjusting as needed
+    container_name: llm_litellm
+    restart: always
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml
+    command: [ "--config", "/app/config.yaml", "--port", "4000", "--num_workers", "4" ]
+    environment:
+      - LITELLM_MASTER_KEY=sk-litellm-master-key
+      # Insert your actual keys or use .env file
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-dummy-openai}
+      - AZURE_API_KEY=${AZURE_API_KEY:-sk-dummy-azure}
+      - AZURE_API_BASE=${AZURE_API_BASE:-https://dummy.openai.azure.com}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+    profiles: ["dev", "full"]
+
+  # ==========================================
+  # FULL Profile: Adds Kafka & Elasticsearch
+  # ==========================================
+  zookeeper:
+    image: bitnami/zookeeper:3.8
+    container_name: llm_zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    logging: *default-logging
+    profiles: ["full"]
+
+  kafka:
+    image: bitnami/kafka:3.4
+    container_name: llm_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+    depends_on:
+      - zookeeper
+    logging: *default-logging
+    profiles: ["full"]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: llm_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    logging: *default-logging
+    profiles: ["full"]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.1
+    container_name: llm_kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    logging: *default-logging
+    profiles: ["full"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  es_data:

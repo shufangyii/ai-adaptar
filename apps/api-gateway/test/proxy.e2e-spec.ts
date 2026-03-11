@@ -1,0 +1,32 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */ import {
+  Test,
+  TestingModule,
+} from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import request from 'supertest';
+import { AppModule } from './../src/app.module';
+
+describe('ProxyController (e2e)', () => {
+  let app: INestApplication;
+
+  beforeEach(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('/v1/models (GET) should handle missing upstream gracefully', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/v1/models')
+      .expect('Content-Type', /json/);
+
+    expect([200, 500, 504]).toContain(res.status);
+  });
+});

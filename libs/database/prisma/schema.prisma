@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  apiKeys         ApiKey[]
+  billingRecords  BillingRecord[]
+
+  @@map("tenants")
+}
+
+model ApiKey {
+  id            String    @id @default(uuid())
+  tenantId      String    @map("tenant_id")
+  keyHash       String    @map("key_hash")
+  name          String
+  versionNumber Int       @default(1) @map("version_number")
+  status        String    @default("ACTIVE")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  expiresAt     DateTime? @map("expires_at")
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  rateLimitConfig RateLimitConfig?
+
+  @@map("api_keys")
+}
+
+model RateLimitConfig {
+  id         String @id @default(uuid())
+  apiKeyId   String @unique @map("api_key_id")
+  qpsLimit   Int    @default(60) @map("qps_limit")
+  tpmLimit   Int    @default(10000) @map("tpm_limit")
+  concurrent Int    @default(5)
+  models     String @default("*") // JSON string or comma-separated
+
+  apiKey     ApiKey @relation(fields: [apiKeyId], references: [id])
+
+  @@map("rate_limit_configs")
+}
+
+model BillingRecord {
+  id               String   @id @default(uuid())
+  tenantId         String   @map("tenant_id")
+  requestId        String   @map("request_id")
+  modelName        String   @map("model_name")
+  tokenCountInput  Int      @default(0) @map("token_count_input")
+  tokenCountOutput Int      @default(0) @map("token_count_output")
+  estimatedCost    Float    @default(0.0) @map("estimated_cost")
+  actualCost       Float    @default(0.0) @map("actual_cost")
+  status           String   @default("PENDING")
+  createdAt        DateTime @default(now()) @map("created_at")
+  processedAt      DateTime? @map("processed_at")
+
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("billing_records")
+}
