@@ -10,7 +10,7 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3000);
-  const apiPrefix = configService.get<string>('API_PREFIX', 'api');
+  const apiPrefix = configService.get<string>('API_PREFIX')!;
 
   // Enable API versioning
   app.enableVersioning({

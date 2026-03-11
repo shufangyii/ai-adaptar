@@ -23,11 +23,9 @@ export class ProxyService {
     private readonly configService: ConfigService,
     private readonly httpService: HttpService,
   ) {
-    this.litellmBaseUrl =
-      this.configService.get<string>('LITELLM_API_BASE') ||
-      'http://localhost:4000';
+    this.litellmBaseUrl = this.configService.get<string>('LITELLM_API_BASE')!;
     this.litellmMasterKey =
-      this.configService.get<string>('LITELLM_MASTER_KEY') || '';
+      this.configService.get<string>('LITELLM_MASTER_KEY')!;
 
     // 初始化连接池属性，避免高并发下端口耗尽 (TCP Port Exhaustion)
     this.httpAgent = new HttpAgent({

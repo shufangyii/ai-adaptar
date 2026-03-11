@@ -1,68 +1,95 @@
+// Prisma Client generator configuration
 generator client {
   provider = "prisma-client-js"
 }
 
+// PostgreSQL datasource configuration
 datasource db {
   provider = "postgresql"
 }
 
+/**
+ * Tenant Model
+ * Represents an organization or customer that uses the LLM gateway platform.
+ * Tenants have their own isolated API keys, billing records, and rate limits.
+ */
 model Tenant {
   id          String   @id @default(uuid())
-  name        String
-  description String?
-  status      String   @default("ACTIVE")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  name        String // Display name for the tenant
+  description String? // Optional description of the tenant
+  status      String   @default("ACTIVE") // Tenant status: ACTIVE, SUSPENDED, etc.
+  createdAt   DateTime @default(now()) @map("created_at") // Tenant creation timestamp
+  updatedAt   DateTime @updatedAt @map("updated_at") // Last update timestamp
 
-  apiKeys         ApiKey[]
-  billingRecords  BillingRecord[]
+  // Relations
+  apiKeys        ApiKey[] // All API keys belonging to this tenant
+  billingRecords BillingRecord[] // All billing records for this tenant
 
   @@map("tenants")
 }
 
+/**
+ * ApiKey Model
+ * Represents an API key used for authenticating LLM requests.
+ * Supports versioning, expiration, and per-key rate limiting.
+ */
 model ApiKey {
   id            String    @id @default(uuid())
-  tenantId      String    @map("tenant_id")
-  keyHash       String    @map("key_hash")
-  name          String
-  versionNumber Int       @default(1) @map("version_number")
-  status        String    @default("ACTIVE")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  expiresAt     DateTime? @map("expires_at")
+  tenantId      String    @map("tenant_id") // Reference to the owning Tenant
+  keyHash       String    @map("key_hash") // SHA-256 hash of the actual API key (not stored in plaintext)
+  name          String // Human-readable name for the key (e.g., "Production Key", "Dev Key")
+  versionNumber Int       @default(1) @map("version_number") // Key version for tracking rotations
+  status        String    @default("ACTIVE") // Key status: ACTIVE, REVOKED, EXPIRED
+  createdAt     DateTime  @default(now()) @map("created_at") // Key creation timestamp
+  expiresAt     DateTime? @map("expires_at") // Optional expiration date/time
 
+  // Relations
   tenant          Tenant           @relation(fields: [tenantId], references: [id])
-  rateLimitConfig RateLimitConfig?
+  rateLimitConfig RateLimitConfig? // Optional rate limiting configuration for this specific key
 
   @@map("api_keys")
 }
 
+/**
+ * RateLimitConfig Model
+ * Configures rate limiting rules for an ApiKey.
+ * Limits are enforced at the API Gateway level based on this configuration.
+ */
 model RateLimitConfig {
   id         String @id @default(uuid())
-  apiKeyId   String @unique @map("api_key_id")
-  qpsLimit   Int    @default(60) @map("qps_limit")
-  tpmLimit   Int    @default(10000) @map("tpm_limit")
-  concurrent Int    @default(5)
-  models     String @default("*") // JSON string or comma-separated
+  apiKeyId   String @unique @map("api_key_id") // Reference to the ApiKey (one-to-one)
+  qpsLimit   Int    @default(60) @map("qps_limit") // Requests per second allowed
+  tpmLimit   Int    @default(10000) @map("tpm_limit") // Requests per minute allowed
+  concurrent Int    @default(5) // Maximum concurrent requests allowed
+  models     String @default("*") // Comma-separated list of model names to apply limits to (or "*" for all models)
 
-  apiKey     ApiKey @relation(fields: [apiKeyId], references: [id])
+  // Relation
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id])
 
   @@map("rate_limit_configs")
 }
 
+/**
+ * BillingRecord Model
+ * Tracks LLM request usage and billing information.
+ * Records are created for each request and processed asynchronously by the background worker.
+ * Supports both estimated and actual cost tracking.
+ */
 model BillingRecord {
-  id               String   @id @default(uuid())
-  tenantId         String   @map("tenant_id")
-  requestId        String   @map("request_id")
-  modelName        String   @map("model_name")
-  tokenCountInput  Int      @default(0) @map("token_count_input")
-  tokenCountOutput Int      @default(0) @map("token_count_output")
-  estimatedCost    Float    @default(0.0) @map("estimated_cost")
-  actualCost       Float    @default(0.0) @map("actual_cost")
-  status           String   @default("PENDING")
-  createdAt        DateTime @default(now()) @map("created_at")
-  processedAt      DateTime? @map("processed_at")
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id") // Reference to the Tenant
+  requestId        String    @map("request_id") // Unique ID of the original LLM request
+  modelName        String    @map("model_name") // Name of the LLM model used (e.g., "gpt-4")
+  tokenCountInput  Int       @default(0) @map("token_count_input") // Number of input tokens
+  tokenCountOutput Int       @default(0) @map("token_count_output") // Number of output tokens
+  estimatedCost    Float     @default(0.0) @map("estimated_cost") // Pre-calculated cost based on model pricing
+  actualCost       Float     @default(0.0) @map("actual_cost") // Actual cost charged by the LLM provider
+  status           String    @default("PENDING") // Processing status: PENDING, COMPLETED, FAILED
+  createdAt        DateTime  @default(now()) @map("created_at") // Record creation timestamp
+  processedAt      DateTime? @map("processed_at") // When the billing record was processed by background worker
 
-  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  // Relation
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("billing_records")
 }

@@ -1,22 +1,20 @@
 model_list:
-  - model_name: gpt-3.5-turbo
+  - model_name: glm-4.7-flash
     litellm_params:
-      model: openai/gpt-3.5-turbo
-      api_key: "os.environ/OPENAI_API_KEY"
-      rpm: 1000 # 独立 QPS (请求/分钟)
-      timeout: 30
-      max_retries: 3
-      weight: 0.6
-  - model_name: gpt-3.5-turbo
-    litellm_params:
-      model: azure/chatgpt-35-turbo
-      api_base: "os.environ/AZURE_API_BASE"
-      api_key: "os.environ/AZURE_API_KEY"
-      api_version: "2024-02-15-preview"
+      model: openai/GLM-4.7-Flash
+      api_base: os.environ/ZHIPU_API_BASE
+      api_key: os.environ/ZHIPU_API_KEY
       rpm: 1000
-      timeout: 30
+      timeout: 60
       max_retries: 3
-      weight: 0.4
+
+  - model_name: 'qwen3.5_4b'
+    litellm_params:
+      model: 'ollama_chat/qwen3.5:4b'
+      api_base: 'http://192.168.10.2:11434'
+      keep_alive: '10m'
+    model_info:
+      supports_function_calling: true
 
 router_settings:
   routing_strategy: usage-based-routing-v2 # LiteLLM 推荐的高可用路由
@@ -24,6 +22,5 @@ router_settings:
 
 litellm_settings:
   drop_params: true
-  set_verbose: true
   # 强制大模型在 stream 结束时返回 Token 消耗 (支持 OpenAI 规范)
-  stream_options: {"include_usage": true}
+  stream_options: { 'include_usage': true }
