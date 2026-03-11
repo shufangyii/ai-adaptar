@@ -1,0 +1,11 @@
+{
+  "name": "load-testing",
+  "version": "1.0.0",
+  "scripts": {
+    "test:local": "k6 run k6-test.js",
+    "test:local:fast": "API_URL=http://localhost:3000 API_KEY=sk-test k6 run --vus 50 --duration 10s k6-test.js"
+  },
+  "devDependencies": {
+    "@types/k6": "^1.6.0"
+  }
+}
