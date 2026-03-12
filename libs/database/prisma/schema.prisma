@@ -18,6 +18,7 @@ model Tenant {
   name        String // Display name for the tenant
   description String? // Optional description of the tenant
   status      String   @default("ACTIVE") // Tenant status: ACTIVE, SUSPENDED, etc.
+  balance     Float    @default(0.0) // Tenant's current balance
   createdAt   DateTime @default(now()) @map("created_at") // Tenant creation timestamp
   updatedAt   DateTime @updatedAt @map("updated_at") // Last update timestamp
 

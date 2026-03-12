@@ -1,9 +1,4 @@
-import {
-  TenantStatus,
-  ApiKeyStatus,
-  BillingRecordStatus,
-  ProviderType,
-} from './index';
+import { TenantStatus, ApiKeyStatus, BillingRecordStatus, ProviderType } from './index';
 
 describe('Shared Types Enums', () => {
   describe('TenantStatus', () => {

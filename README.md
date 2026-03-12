@@ -95,13 +95,14 @@ pnpm run format
 ✅ pnpm workspace 初始化
 ✅ NestJS 核心应用 `api-gateway` 创建
 ✅ 共享库 `libs` 初始化
-  - `libs/database` - 数据库模块
-  - `libs/redis` - Redis 模块
-  - `libs/shared-types` - 共享类型定义
-✅ 基础配置文件
-  - ESLint + Prettier
-  - TypeScript 配置
-  - Turbo 配置
+
+- `libs/database` - 数据库模块
+- `libs/redis` - Redis 模块
+- `libs/shared-types` - 共享类型定义
+  ✅ 基础配置文件
+- ESLint + Prettier
+- TypeScript 配置
+- Turbo 配置
 
 ## 下一步
 

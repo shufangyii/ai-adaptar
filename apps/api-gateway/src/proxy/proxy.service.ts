@@ -1,27 +1,44 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-/* eslint-disable @typescript-eslint/no-unsafe-call */
 import { HttpService } from '@nestjs/axios';
-import { Injectable, Logger, Req, Res } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { trace } from '@opentelemetry/api';
 import { HttpAgent, HttpsAgent } from 'agentkeepalive';
-import axios, { AxiosRequestConfig } from 'axios';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import * as crypto from 'crypto';
 import type { Request, Response } from 'express';
 import * as http from 'http';
 import * as https from 'https';
+import CircuitBreaker from 'opossum';
+import { RateLimitService } from '../modules/rate-limit/rate-limit.service';
 
+/**
+ * 代理服务 (ProxyService)
+ *
+ * 功能：
+ * 1. 将客户端请求转发到 LiteLLM 后端（Chat Completions 和 Models API）
+ * 2. 管理连接池（避免 TCP 端口耗尽）
+ * 3. 实现熔断器模式（防止雪崩效应）
+ * 4. 流式响应处理（SSE）
+ * 5. 客户端断开自动取消上游请求（节省 token）
+ *
+ * 核心优化：
+ * - 使用 Node.js 原生 Stream Pipe 直接转发（避免内存占用和延迟）
+ * - 连接池复用（HttpAgent/HttpsAgent）
+ * - 客户端断开检测（AbortController）
+ */
 @Injectable()
-export class ProxyService {
+export class ProxyService implements OnModuleDestroy {
   private readonly logger = new Logger(ProxyService.name);
   private readonly litellmBaseUrl: string; // LiteLLM 代理的后端地址
   private readonly litellmMasterKey: string; // 鉴权用的 Master Key
   private readonly httpAgent: http.Agent; // HTTP 连接池
   private readonly httpsAgent: https.Agent; // HTTPS 连接池
+  private readonly breaker: CircuitBreaker<[AxiosRequestConfig], AxiosResponse>; // 熔断器实例
 
   constructor(
     private readonly configService: ConfigService,
     private readonly httpService: HttpService,
+    private readonly rateLimitService: RateLimitService,
   ) {
     this.litellmBaseUrl = this.configService.get<string>('LITELLM_API_BASE')!;
     this.litellmMasterKey =
@@ -41,6 +58,47 @@ export class ProxyService {
       timeout: 60000,
       freeSocketTimeout: 30000,
     });
+
+    // 初始化熔断器 Circuit Breaker
+    // 使用 opossum 封装底层的 axios 请求
+    const requestAction = async (config: AxiosRequestConfig) => {
+      return await this.httpService.axiosRef.request(config);
+    };
+
+    const breakerOptions = {
+      timeout: 60000, // 熔断器内请求最大超时时间 (与代理超时时间对齐)
+      errorThresholdPercentage: 50, // 如果 50% 的请求失败，则触发熔断
+      resetTimeout: 10000, // 熔断 10 秒后尝试进入 HALF_OPEN 状态
+      capacity: 1000, // 单个节点最大并发数，超出也会导致请求被拒绝（防 Node.js 事件循环阻塞）
+      volumeThreshold: 10, // 至少有 10 个请求才开始计算错误率
+    };
+
+    this.breaker = new CircuitBreaker(requestAction, breakerOptions);
+
+    // 绑定熔断器状态流转事件日志
+    this.breaker.on('open', () =>
+      this.logger.error('Circuit Breaker OPEN: Upstream is failing.'),
+    );
+    this.breaker.on('halfOpen', () =>
+      this.logger.warn('Circuit Breaker HALF_OPEN: Testing upstream.'),
+    );
+    this.breaker.on('close', () =>
+      this.logger.log('Circuit Breaker CLOSED: Upstream recovered.'),
+    );
+    this.breaker.on('reject', () =>
+      this.logger.error(
+        'Circuit Breaker REJECTED: Max capacity reached or circuit open.',
+      ),
+    );
+  }
+
+  onModuleDestroy() {
+    this.logger.log('Cleaning up ProxyService resources...');
+    this.httpAgent.destroy();
+    this.httpsAgent.destroy();
+    // Circuit breaker cleanup - remove all listeners and disable
+    this.breaker.removeAllListeners();
+    this.breaker.disable();
   }
 
   /**
@@ -51,7 +109,37 @@ export class ProxyService {
     @Res() res: Response,
   ): Promise<void> {
     const requestId = crypto.randomUUID();
-    const traceId = (req.headers['trace-id'] as string) || requestId;
+
+    // Attempt to get trace ID from OpenTelemetry active span
+    const activeSpan = trace.getActiveSpan();
+    const otelTraceId = activeSpan?.spanContext()?.traceId;
+
+    // Fallback: OpenTelemetry > Client provided > Generate new
+    const traceId =
+      otelTraceId || (req.headers['trace-id'] as string) || requestId;
+
+    // --- CTO REVIEW POINT: Concurrent Connections Release ---
+    // Make sure we always release the concurrency lock exactly once per request.
+    let connectionReleased = false;
+    const releaseConnectionLimit = () => {
+      const keyHash = req.user?.keyHash;
+      if (!connectionReleased && keyHash) {
+        connectionReleased = true;
+        // Run asynchronously without waiting
+        void this.rateLimitService
+          .releaseConnection(keyHash)
+          .catch((err: unknown) => {
+            this.logger.error(
+              `[${traceId}] Failed to release connection limit`,
+              err,
+            );
+          });
+      }
+    };
+
+    res.on('close', releaseConnectionLimit);
+    res.on('finish', releaseConnectionLimit);
+    res.on('error', releaseConnectionLimit);
 
     // --- CTO REVIEW POINT: Abort Signal Implementation ---
     // If the client (browser, caller app) disconnects early (e.g., closing the tab),
@@ -86,7 +174,17 @@ export class ProxyService {
       }
     }
     headers['x-request-id'] = requestId;
-    headers['trace-id'] = traceId;
+    headers['trace-id'] = traceId; // For our internal tracking down to LiteLLM if needed
+    if (otelTraceId) {
+      // W3C Trace Context standard format
+      // Note: @opentelemetry/instrumentation-http usually injects traceparent automatically,
+      // but explicitly setting it here ensures LiteLLM receives our specific span context.
+      headers['traceparent'] =
+        `00-${otelTraceId}-${activeSpan?.spanContext().spanId || '0000000000000000'}-01`;
+    }
+
+    // Set Trace-Id in the response headers so the client can also track it
+    res.setHeader('trace-id', traceId);
 
     // For MVP Phase 1, we replace the tenant's API key with our LiteLLM Master Key.
     headers['authorization'] = `Bearer ${this.litellmMasterKey}`;
@@ -107,7 +205,7 @@ export class ProxyService {
       method: 'POST',
       url,
       headers,
-      data: req.body,
+      data: req.body as unknown,
       responseType: 'stream', // 核心: SSE (Server-Sent Events) 需要直接处理流结构
       timeout: upstreamTimeout, // 上游接口的最长硬性响应超时限制
       signal: abortController.signal,
@@ -116,11 +214,14 @@ export class ProxyService {
     };
 
     try {
-      const response = await this.httpService.axiosRef.request(axiosConfig);
+      // Execute the request via Circuit Breaker instead of axios directly
+      const response = await this.breaker.fire(axiosConfig);
 
       // 从上游响应中读取 status 状态码及返回的 headers，并原样拷贝给客户端
       res.status(response.status);
-      for (const [key, value] of Object.entries(response.headers)) {
+      for (const [key, value] of Object.entries(
+        response.headers as Record<string, unknown>,
+      )) {
         res.setHeader(key, value as string | string[]);
       }
 
@@ -128,11 +229,11 @@ export class ProxyService {
       // 我们在此绝对不走 NestJS 默认的 Interceptor 对 Response 的序列化特性。
       // 它会将内容完全拉取到内存缓存完毕再处理，导致 OOM 和极长的首字点亮延迟 (TTFT)。
       // 通过 node 原生 pipe 直接转发比特流：
-      const stream = response.data;
+      const stream = response.data as NodeJS.ReadableStream;
 
       stream.pipe(res);
 
-      stream.on('error', (err: any) => {
+      stream.on('error', (err: Error) => {
         this.logger.error(`[${traceId}] Stream error from upstream:`, err);
         // 若流中断时，HTTP响应头尚未来得及发出，则直接返回 500 API 错误
         if (!res.headersSent) {
@@ -145,6 +246,20 @@ export class ProxyService {
         }
       });
     } catch (error: unknown) {
+      // If the error is thrown by the Circuit Breaker because it's open
+      const err = error as Error & { code?: string };
+      if (err?.code === 'EOPENBREAKER') {
+        this.logger.warn(
+          `[${traceId}] Request rejected: Circuit Breaker is OPEN`,
+        );
+        if (!res.headersSent) {
+          res
+            .status(503)
+            .json({ error: 'Service Unavailable - Upstream circuit open' });
+        }
+        return;
+      }
+
       // If the error was thrown because WE aborted it (due to client disconnect),
       // just log and exit cleanly.
       if (axios.isCancel(error)) {
@@ -154,22 +269,30 @@ export class ProxyService {
         return;
       }
 
-      const err = error as any;
-      const status = err.response?.status ? Number(err.response.status) : 504;
+      let status = 504;
+      let data: unknown = { error: 'Gateway timeout or upstream error' };
+      let message = 'Unknown error';
 
-      const data = err.response?.data || {
-        error: 'Gateway timeout or upstream error',
-      };
-      const message = err.message ? String(err.message) : 'Unknown error';
+      if (axios.isAxiosError(error)) {
+        status = error.response?.status ? Number(error.response.status) : 504;
+        data = error.response?.data || data;
+        message = error.message || message;
+      } else if (error instanceof Error) {
+        message = error.message;
+      }
 
       this.logger.error(`[${traceId}] Forwarding error: ${message}`);
 
       // 没有发出响应时，根据返回的 Body 拦截报错抛给调用方
       if (!res.headersSent) {
-        if (data && typeof data.pipe === 'function') {
+        if (
+          data &&
+          typeof data === 'object' &&
+          'pipe' in data &&
+          typeof (data as NodeJS.ReadableStream).pipe === 'function'
+        ) {
           res.status(status);
-
-          data.pipe(res);
+          (data as NodeJS.ReadableStream).pipe(res);
         } else {
           res.status(status).json(data);
         }
@@ -181,24 +304,43 @@ export class ProxyService {
    * 代理转发查询受支持模型列表的请求
    */
   async forwardModels(
-    @Req() req: Request,
+    @Req() _req: Request,
     @Res() res: Response,
   ): Promise<void> {
     const url = `${this.litellmBaseUrl}/v1/models`;
     try {
-      const response = await this.httpService.axiosRef.get(url, {
+      // Execute the request via Circuit Breaker instead of axios directly
+      const response = await this.breaker.fire({
+        method: 'GET',
+        url,
         headers: { Authorization: `Bearer ${this.litellmMasterKey}` },
         httpAgent: this.httpAgent,
         httpsAgent: this.httpsAgent,
         timeout: 10000,
       });
+
       res.status(response.status).json(response.data);
     } catch (error: unknown) {
-      const err = error as any;
-      const status = err.response?.status ? Number(err.response.status) : 500;
-
-      const data = err.response?.data || { error: 'Internal Server Error' };
-      res.status(status).json(data);
+      const err = error as Error & { code?: string };
+      if (err?.code === 'EOPENBREAKER') {
+        res
+          .status(503)
+          .json({ error: 'Service Unavailable - Upstream circuit open' });
+        return;
+      }
+      if (axios.isAxiosError(error) && error.response) {
+        const status = error.response.status
+          ? Number(error.response.status)
+          : 500;
+        const data = (error.response.data as unknown) || {
+          error: 'Internal Server Error',
+        };
+        res.status(status).json(data);
+      } else {
+        const status = 500;
+        const data = { error: 'Internal Server Error' };
+        res.status(status).json(data);
+      }
     }
   }
 }

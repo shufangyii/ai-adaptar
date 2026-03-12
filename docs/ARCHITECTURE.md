@@ -21,7 +21,7 @@
 | **底层核心框架**      | **NestJS (Node.js/TypeScript)**                   | NestJS 提供开箱即用的模块化设计、依赖注入、中间件、守卫(Guard)和拦截器，非常适合构建可维护的企业级微服务架构。Node.js 的非阻塞 I/O 在处理大量流式 (Streaming) 网络请求时性能表现优异。                                                                      |
 | **LLM 适配层**        | **LiteLLM (Python proxy) 或直接基于 Node 端封装** | 用户指定了 LiteLLM。LiteLLM 是目前最佳的开源 LLM 代理，内置了一百多个模型的标准化适配（OpenAI 格式）、重试、负载均衡和 Fallback 能力。**架构建议：NestJS 作为前置的业务网关处理鉴权/计费/审计，后端挂载 LiteLLM Proxy 容器集群处理模型转换和请求。**        |
 | **关系型数据库**      | **PostgreSQL (配合 Prisma ORM)**                  | 存储租户信息、应用管理、API Key 和配额流水。PostgreSQL 在处理高并发、复杂查询及 JSONB 扩展上表现极佳，Prisma 提供了极佳的 TypeScript 类型安全。                                                                                                             |
-| **缓存与实时计数**    | **Redis (Standalone/Cluster)**                    | 初创与本地开发使用 Standalone，生产环境使用 Cluster。用于实现高速的多维速率限制 (Rate Limiting 2.0)、分布式锁以及频繁读取的缓存（实时余额校验、Key 的校验、路由规则等），极大地降低对数据库的压力。                                                     |
+| **缓存与实时计数**    | **Redis (Standalone/Cluster)**                    | 初创与本地开发使用 Standalone，生产环境使用 Cluster。用于实现高速的多维速率限制 (Rate Limiting 2.0)、分布式锁以及频繁读取的缓存（实时余额校验、Key 的校验、路由规则等），极大地降低对数据库的压力。                                                         |
 | **消息队列 (必选)**   | **Kafka / RabbitMQ**                              | 必须引入消息队列处理异步日志落盘。考虑到 LLM 吞吐量大，首选 Kafka。**避免使用单一 `projectId` 导致热点分区**，应使用 `hash(projectId + traceId)` 作为 Partition Key 打散流量。通过 MQ 将日志和账单异步写入存储系统，并增加 Dead Letter Queue 异常处理机制。 |
 | **历史/审计日志存储** | **Elasticsearch**                                 | 专门用于存储海量的调用日志 (请求体、响应体、耗时、Token 消耗等)，利用 ES 强大的全文检索与聚合分析能力，以便给各业务线生成对账单及监控仪表盘。                                                                                                               |
 | **网关/反向代理**     | **Nginx 或 Envoy**                                | 作为整个集群的统一入口点，处理 SSL 证书卸载、基础的连接数限制和向 NestJS 微服务集群的负载均衡。                                                                                                                                                             |
@@ -91,14 +91,14 @@ graph TD
 erDiagram
     Tenant ||--o{ ApiKey : "owns"
     Tenant ||--o{ BillingRecord : "generates"
-    
+
     Tenant {
         string id PK
         string name
         float balance "账户余额"
         float quota "当前可用配额"
     }
-    
+
     ApiKey ||--o{ RateLimitConfig : "bound_to"
     ApiKey {
         string id PK
@@ -106,7 +106,7 @@ erDiagram
         string key_hash
         string allowed_models "允许调用的模型列表"
     }
-    
+
     BillingRecord {
         string id PK
         string tenant_id FK
@@ -114,21 +114,21 @@ erDiagram
         float actual_cost
         string status
     }
-    
+
     RateLimitConfig {
         string id PK
         string api_key_id FK
         int qps_limit
         int tpm_limit
     }
-    
+
     ModelPricing {
         string id PK
         string model_name
         float input_price
         float output_price
     }
-    
+
     AuditLog {
         string id PK
         string action
@@ -149,7 +149,7 @@ sequenceDiagram
     participant PG as PostgreSQL
     participant Redis as Redis Cache
     participant Gateway as API Gateway
-    
+
     Admin->>PG: 1. 写入或更新配置数据
     PG-->>Admin: 返回成功
     Admin->>Redis: 2. 将热点配置同步推送 (或淘汰) 至 Redis
